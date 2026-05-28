@@ -771,7 +771,7 @@ def main():
                     min_distances[ew] = dist
 
                 # 🔥 CHECK: entfernt sich → Minimum erreicht
-                if dist > min_distances[ew] + 1:
+                if dist > min_distances[ew] + 0.1:
 
                     min_dist = min_distances[ew]
 
