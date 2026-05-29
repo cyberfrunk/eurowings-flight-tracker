@@ -164,14 +164,6 @@ Full setup guide:
 
 ---
 
-## 🛠️ Future Ideas
-
-* Web dashboard (live map)
-* Telegram notifications
-* Flight statistics
-
----
-
 ## 👨‍✈️ Author
 
 Built for personal flight awareness.
