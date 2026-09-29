@@ -74,12 +74,6 @@ OPENSKY_PASS = config.get("OPENSKY_PASS")
 MAIL_USER = get_config("MAIL_USER")
 MAIL_PASSWORD = get_config("MAIL_PASSWORD")
 
-# Home Assistant / FlightRadar24
-HA_URL = get_config("HA_URL")
-HA_TOKEN = get_config("HA_TOKEN")
-HA_FR24_ADD_ENTITY = "text.flightradar24_add_to_track"
-HA_FR24_SENSOR = "sensor.flightradar24_additional_tracked"
-
 # --- Feste Config ---
 TZ = pytz.timezone("Europe/Berlin")
 
@@ -145,6 +139,187 @@ def send_mail(subject, text, to):
            server.send_message(msg)
 
         logger.info(f"MAIL GESENDET an {to}")
+
+    except Exception as e:
+        logger.error(f"MAIL ERROR {e}")
+
+# ================= MAIL EINLESEN=================
+
+import imaplib
+import email
+import re
+from pdf2image import convert_from_path
+import pytesseract
+
+def test_mail_login():
+
+    def extract_relevant_section(text):
+
+        text = text.upper()
+
+        start_match = re.search(r"FLIGHTS TODAY", text)
+
+        if not start_match:
+            logger.warning("⚠️ 'Flights today' nicht gefunden → kompletter Text wird genutzt")
+            return text
+
+        start_idx = start_match.start()
+
+        end_match = re.search(
+            r"(TOMORROW|CREW MEMBER)",
+            text[start_idx:]
+        )
+
+        if end_match:
+            end_idx = start_idx + end_match.start()
+            section = text[start_idx:end_idx]
+        else:
+            section = text[start_idx:start_idx + 2000]
+
+        logger.debug(f"SECTION (kurz): {section[:200]}")
+
+        return section
+
+
+    def extract_callsigns(text, is_ocr=False):
+
+        logger.debug(f"RAW TEXT (kurz): {text[:200]}")
+
+        # 🔥 NORMALISIERUNG
+        text = text.upper()
+        text = text.replace("\n", " ")
+        text = text.replace("(", " ").replace(")", " ")
+
+        # Sonderzeichen entfernen
+        text = re.sub(r"[^A-Z0-9\s]", "", text)
+
+        # 🔥 Unterschied PDF vs OCR
+        if is_ocr:
+            text = text.replace(" ", "")
+            matches = re.findall(r"EWG[A-Z0-9]{2,4}", text)
+        else:
+            matches = re.findall(r"\bEWG\s?[A-Z0-9]{2,4}\b", text)
+
+        logger.debug(f"CLEAN TEXT (kurz): {text[:200]}")
+        logger.debug(f"RAW MATCHES: {matches}")
+
+        callsigns = []
+
+        for cs in matches:
+            cs = cs.replace(" ", "")
+
+            if is_ocr:
+                cs = cs.rstrip("LI1]")
+                cs = cs[:7]
+
+            # harte Validierung
+            if re.match(r"^EWG[A-Z0-9]{2,4}$", cs):
+                callsigns.append(cs)
+
+        # Duplikate entfernen (Reihenfolge behalten!)
+        callsigns = list(dict.fromkeys(callsigns))
+
+        logger.debug(f"CLEAN CALLSIGNS: {callsigns}")
+
+        return callsigns
+
+
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmx.net", timeout=10)
+        mail.login(MAIL_USER, MAIL_PASSWORD)
+        mail.select("inbox")
+
+        status, data = mail.search(None, '(UNSEEN SUBJECT "Daily")')
+
+        if not data[0]:
+            logger.info("KEINE PASSENDE MAIL")
+            return
+
+        latest_email_id = data[0].split()[-1]
+
+        status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
+        msg = email.message_from_bytes(msg_data[0][1])
+
+        subject = msg.get("Subject", "")
+        logger.info(f"MAIL SUBJECT: {subject}")
+
+        for part in msg.walk():
+
+            if part.get_content_type() == "application/pdf":
+
+                filepath = "/home/pi/Document.pdf"
+
+                with open(filepath, "wb") as f:
+                    f.write(part.get_payload(decode=True))
+
+                logger.info("PDF gespeichert")
+
+                # =========================
+                # 🔥 1. PDFTEXT FIRST
+                # =========================
+
+                text = ""
+
+                try:
+                    import subprocess
+
+                    logger.info("PDFTEXT START")
+
+                    text = subprocess.check_output(
+                        ["pdftotext", filepath, "-"],
+                        text=True
+                    )
+
+                    logger.info("PDFTEXT OK")
+
+                except Exception as e:
+                    logger.error(f"PDFTEXT ERROR {e}")
+
+                section = extract_relevant_section(text)
+                callsigns = extract_callsigns(section, is_ocr=False)
+
+                # =========================
+                # 🔥 2. OCR FALLBACK
+                # =========================
+
+                if not callsigns:
+
+                    logger.info("KEINE CALLSIGNS VIA PDFTEXT → OCR FALLBACK")
+
+                    try:
+                        images = convert_from_path(filepath, first_page=1, last_page=1, dpi=300)
+
+                        text_ocr = ""
+
+                        for img in images:
+                            text_ocr += pytesseract.image_to_string(img)
+
+                        section = extract_relevant_section(text_ocr)
+                        callsigns = extract_callsigns(section, is_ocr=True)
+
+                    except Exception as e:
+                        logger.error(f"OCR ERROR {e}")
+
+                # =========================
+                # 🔥 ERGEBNIS
+                # =========================
+
+                if callsigns:
+
+                    logger.info(f"FINAL CALLSIGNS: {callsigns}")
+
+                    send_mail(
+                        "✅ Daily verarbeitet",
+                        f"Heutige Fluege:\n{callsigns}",
+                        [MY_MAIL]
+                    )
+
+                    return callsigns
+
+                else:
+                    logger.warning("❌ KEIN CALLSIGN GEFUNDEN")
+
+        mail.logout()
 
     except Exception as e:
         logger.error(f"MAIL ERROR {e}")
@@ -359,134 +534,6 @@ def todays_flights():
 
     return flights
 
-# ================= HOME ASSISTANT / FLIGHTRADAR24 =================
-
-def ha_headers():
-    if not HA_TOKEN:
-        return {}
-    return {
-        "Authorization": f"Bearer {HA_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-
-def ha_fr24_add_flight(flight_number):
-    """Flugnummer einmalig an die FR24-Integration in Home Assistant übergeben."""
-    if not HA_URL or not HA_TOKEN:
-        logger.error("HA_URL oder HA_TOKEN fehlt in /home/pi/.flugchecker_config")
-        return False
-
-    try:
-        r = requests.post(
-            f"{HA_URL.rstrip('/')}/api/services/text/set_value",
-            headers=ha_headers(),
-            json={"entity_id": HA_FR24_ADD_ENTITY, "value": flight_number},
-            timeout=10,
-        )
-        r.raise_for_status()
-        logger.info(f"HA/FR24 TRACKING ANGEFORDERT: {flight_number}")
-        return True
-    except Exception as e:
-        logger.warning(f"HA/FR24 ADD ERROR {flight_number}: {e}")
-        return False
-
-
-def ha_fr24_get_flights():
-    """Von HA bereits aufgelöste FR24-Flüge lesen."""
-    if not HA_URL or not HA_TOKEN:
-        return []
-
-    try:
-        r = requests.get(
-            f"{HA_URL.rstrip('/')}/api/states/{HA_FR24_SENSOR}",
-            headers=ha_headers(),
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        flights = data.get("attributes", {}).get("flights", [])
-        return flights if isinstance(flights, list) else []
-    except Exception as e:
-        logger.warning(f"HA/FR24 READ ERROR: {e}")
-        return []
-
-
-def resolve_callsigns_via_ha(flights, requested_flights, known_mapping):
-    """
-    Kalender-Flugnummern -> EWG-Callsigns.
-    Neue Flugnummern werden nur einmal pro Programmlauf an HA übergeben.
-    Danach wird bei jedem Kalenderzyklus nur der HA-Sensor gelesen.
-    """
-    flight_numbers = [f[1].upper() for f in flights]
-    if not flight_numbers:
-        return {}, requested_flights
-
-    logger.info("HA/FR24 AUFLOESUNG: " + ", ".join(flight_numbers))
-
-    added = False
-    for flight_number in flight_numbers:
-        if flight_number not in requested_flights:
-            if ha_fr24_add_flight(flight_number):
-                requested_flights.add(flight_number)
-                added = True
-
-    # Direkt nach neuen Einträgen kurz Zeit für die HA-Integration lassen.
-    if added:
-        time.sleep(8)
-
-    tracked = ha_fr24_get_flights()
-    current = set(flight_numbers)
-    mapping = {k: v for k, v in known_mapping.items() if k in current}
-
-    for item in tracked:
-        if not isinstance(item, dict):
-            continue
-
-        flight_number = str(item.get("flight_number") or "").strip().upper()
-        callsign = str(item.get("callsign") or "").strip().upper()
-        icao24 = item.get("icao24") or item.get("aircraft_icao24")
-        if icao24:
-            icao24 = str(icao24).strip().upper()
-            if not re.fullmatch(r"[0-9A-F]{6}", icao24):
-                icao24 = None
-
-        if flight_number not in current:
-            continue
-        if not re.fullmatch(r"EWG[A-Z0-9]{2,4}", callsign):
-            continue
-
-        mapping[flight_number] = callsign
-        logger.info(f"HA/FR24 MATCH: {flight_number} -> {callsign} (ICAO24={icao24})")
-
-    missing = [n for n in flight_numbers if n not in mapping]
-    if missing:
-        logger.info("HA/FR24 NOCH OHNE MATCH: " + ", ".join(missing))
-
-    return mapping, requested_flights
-
-
-def save_callsign_cache_if_changed(callsigns):
-    """callsigns.json nur schreiben, wenn sich der Inhalt wirklich geändert hat."""
-    path = "/home/pi/callsigns.json"
-    old = None
-    try:
-        with open(path, "r") as f:
-            old = json.load(f)
-    except Exception:
-        pass
-
-    if old == callsigns:
-        logger.info("CALLSIGN CACHE unverändert")
-        return
-
-    try:
-        with open(path, "w") as f:
-            json.dump(callsigns, f)
-        logger.info(f"CALLSIGN CACHE gespeichert: {callsigns}")
-    except Exception as e:
-        logger.error(f"CALLSIGN SAVE ERROR {e}")
-
-
 # ================= AIRCRAFT =================
 
 def read_aircraft():
@@ -539,21 +586,23 @@ def main():
     flights = todays_flights()
     last_calendar_update = datetime.now()
     last_flight_time = None
-    last_flight = None
-    last_dep = None
-    last_arr = None
-    last_flight_number = None
 
     if not flights:
         logger.info("Keine Fluege im Zeitfenster")
+        last_flight = None
+        last_flight_time = None
+        last_dep = None
+        last_arr = None
     else:
         last_flight = flights[-1]
         last_flight_time = last_flight[0]
         last_dep = last_flight[2]
         last_arr = last_flight[3]
-        last_flight_number = last_flight[1]
 
-        logger.info(f"Letzter Flug heute: {last_flight_number} um {last_flight_time.strftime('%H:%M')}")
+        flight_time = last_flight[0].strftime("%H:%M")
+        flight_number = last_flight[1]
+
+        logger.info(f"Letzter Flug heute: {flight_number} um {flight_time}")
         logger.info(f"Route: {last_dep} -> {last_arr}")
 
     overflight_triggered = set()
@@ -563,66 +612,49 @@ def main():
     flight_landed = False
 
     min_distances = {}
+
     last_altitude = None
 
-    # Logging Steuerung
+    # 🔥 Logging Steuerung
     last_no_callsign_log = 0
 
-    # OpenSky Steuerung
+    # 🔥 NEU OpenSky Steuerung
     last_callsign_search = 0
     last_tracking_check = 0
     last_tracking_api_call = 0
     request_counter = 0
     CALLSIGN_SEARCH_INTERVAL = 900   # 15 min
-    CALLSIGN_ACTIVE_INTERVAL = 180   # 3 min
+    CALLSIGN_ACTIVE_INTERVAL = 180    # 3 min
 
     opensky_tracked_icao = None
 
-    # OpenSky Tracking-Zustand
+    # 🔥 NEU: Tracking Zustand
     last_seen_timestamp = None
     was_airborne = False
     was_below_fl100 = False
     prev_groundspeed = None
 
-    # Callsign-Cache ist nur Fallback für Überflüge.
+    # 🔥 Mail / Callsign Handling
     MY_CALLSIGNS = []
     LAST_CALLSIGN = None
-    flight_callsigns = {}
-    ha_requested_flights = set()
 
     try:
         with open("/home/pi/callsigns.json", "r") as f:
-            cached = json.load(f)
-            if isinstance(cached, list):
-                MY_CALLSIGNS = list(dict.fromkeys(cached))
-                if MY_CALLSIGNS:
-                    logger.info(f"CALLSIGNS CACHE geladen: {MY_CALLSIGNS}")
+            MY_CALLSIGNS = json.load(f)
+
+            if MY_CALLSIGNS:
+                LAST_CALLSIGN = MY_CALLSIGNS[-1]
+                logger.info(f"CALLSIGNS geladen: {MY_CALLSIGNS}")
+                logger.info(f"LETZTER CALLSIGN (geladen): {LAST_CALLSIGN}")
+
     except Exception:
         logger.info("Keine gespeicherten Callsigns gefunden")
 
-    # Sofortige Auflösung beim Start. Der letzte Callsign wird ausdrücklich
-    # über die letzte Kalender-Flugnummer bestimmt, nicht über Listenpositionen.
-    if flights:
-        flight_callsigns, ha_requested_flights = resolve_callsigns_via_ha(
-            flights, ha_requested_flights, flight_callsigns
-        )
-
-        resolved = [flight_callsigns[f[1]] for f in flights if f[1] in flight_callsigns]
-        if resolved:
-            MY_CALLSIGNS = list(dict.fromkeys(resolved))
-            save_callsign_cache_if_changed(MY_CALLSIGNS)
-            logger.info(f"MEINE CALLSIGNS (HA/FR24): {MY_CALLSIGNS}")
-        elif MY_CALLSIGNS:
-            logger.info("HA/FR24 aktuell ohne neue Callsign-Matches; Cache bleibt aktiv")
-
-        LAST_CALLSIGN = flight_callsigns.get(last_flight_number)
-        if LAST_CALLSIGN:
-            logger.info(f"LETZTER CALLSIGN: {LAST_CALLSIGN}")
-        else:
-            logger.info(f"LETZTER CALLSIGN für {last_flight_number} noch nicht bekannt")
-
     if not MY_CALLSIGNS:
         logger.info("KEINE CALLSIGNS AKTIV")
+
+    MAIL_INTERVAL = 300 # Mailabruf 5 Minuten
+    last_mail_check = datetime.now() - timedelta(seconds=MAIL_INTERVAL)
 
     logger.info("TRACKING START")
 
@@ -630,13 +662,45 @@ def main():
 
         try:
 
-            # ================= KALENDER + HA/FR24 UPDATE =================
+            # ================= MAIL CHECK =================
+
+            diff = (datetime.now() - last_mail_check).total_seconds()
+            # logger.info(f"MAIL TIMER: diff={diff:.1f}")
+
+            if datetime.now() - last_mail_check > timedelta(seconds=MAIL_INTERVAL):
+
+                logger.info("MAIL CHECK START")
+
+                try:
+                    callsigns = test_mail_login()
+                except Exception as e:
+                    logger.error(f"MAIL FETCH ERROR {e}")
+                    callsigns = None
+
+                last_mail_check = datetime.now()
+
+                if callsigns:
+
+                    MY_CALLSIGNS = list(dict.fromkeys(callsigns))
+                    LAST_CALLSIGN = callsigns[-1]
+
+                    logger.info(f"MEINE CALLSIGNS: {MY_CALLSIGNS}")
+                    logger.info(f"LETZTER CALLSIGN: {LAST_CALLSIGN}")
+
+                    try:
+                        with open("/home/pi/callsigns.json", "w") as f:
+                            json.dump(callsigns, f)
+                    except Exception as e:
+                        logger.error(f"CALLSIGN SAVE ERROR {e}")
+
+                logger.info("MAIL CHECK DONE")
+
+            # ================= KALENDER UPDATE =================
 
             if datetime.now() - last_calendar_update > timedelta(minutes=5): # iCloud 5 Min
 
                 logger.info("Kalender wird neu eingelesen")
 
-                previous_last_flight_number = last_flight_number
                 flights = todays_flights()
 
                 if flights:
@@ -644,76 +708,12 @@ def main():
                     last_flight_time = last_flight[0]
                     last_dep = last_flight[2]
                     last_arr = last_flight[3]
-                    last_flight_number = last_flight[1]
 
-                    logger.info(f"Letzter Flug heute: {last_flight_number} um {last_flight_time.strftime('%H:%M')}")
+                    flight_time = last_flight[0].strftime("%H:%M")
+                    flight_number = last_flight[1]
+
+                    logger.info(f"Letzter Flug heute: {flight_number} um {flight_time}")
                     logger.info(f"Route: {last_dep} -> {last_arr}")
-                else:
-                    last_flight = None
-                    last_flight_time = None
-                    last_dep = None
-                    last_arr = None
-                    last_flight_number = None
-
-                # Wenn der Kalender einen anderen letzten Flug nennt, darf ein
-                # alter OpenSky-Tracker nicht auf dem vorherigen Flug weiterlaufen.
-                if previous_last_flight_number != last_flight_number:
-                    logger.info(
-                        f"LETZTER FLUG GEÄNDERT: {previous_last_flight_number} -> {last_flight_number}; "
-                        "OpenSky-Tracking wird zurückgesetzt"
-                    )
-                    opensky_tracked_icao = None
-                    tracked_callsign = None
-                    last_callsign_search = 0
-                    last_tracking_api_call = 0
-                    last_seen_timestamp = None
-                    was_airborne = False
-                    was_below_fl100 = False
-                    prev_groundspeed = None
-                    last_altitude = None
-                    flight_landed = False
-
-                # Nach der letzten erkannten Landung nicht wieder aus dem Kalender
-                # Callsigns nachladen und die gelöschte Cache-Datei neu erzeugen.
-                if flights and not flight_landed:
-                    flight_callsigns, ha_requested_flights = resolve_callsigns_via_ha(
-                        flights, ha_requested_flights, flight_callsigns
-                    )
-
-                    resolved = [flight_callsigns[f[1]] for f in flights if f[1] in flight_callsigns]
-                    if resolved:
-                        new_callsigns = list(dict.fromkeys(resolved))
-                        if new_callsigns != MY_CALLSIGNS:
-                            MY_CALLSIGNS = new_callsigns
-                            logger.info(f"MEINE CALLSIGNS (HA/FR24): {MY_CALLSIGNS}")
-                        save_callsign_cache_if_changed(MY_CALLSIGNS)
-                    elif MY_CALLSIGNS:
-                        logger.info("HA/FR24 aktuell ohne neue Callsign-Matches; Cache bleibt aktiv")
-
-                    new_last_callsign = flight_callsigns.get(last_flight_number)
-
-                    # Auch ein geändertes Callsign des letzten Fluges setzt einen
-                    # eventuell noch laufenden Tracker des alten Callsigns zurück.
-                    if LAST_CALLSIGN and new_last_callsign and LAST_CALLSIGN != new_last_callsign:
-                        logger.info(
-                            f"LETZTER CALLSIGN GEÄNDERT: {LAST_CALLSIGN} -> {new_last_callsign}; "
-                            "OpenSky-Tracking wird zurückgesetzt"
-                        )
-                        opensky_tracked_icao = None
-                        tracked_callsign = None
-                        last_callsign_search = 0
-                        last_tracking_api_call = 0
-                        last_seen_timestamp = None
-                        was_airborne = False
-                        was_below_fl100 = False
-                        prev_groundspeed = None
-                        last_altitude = None
-
-                    LAST_CALLSIGN = new_last_callsign
-                    if LAST_CALLSIGN:
-                        logger.info(f"LETZTER CALLSIGN: {LAST_CALLSIGN}")
-                    elif last_flight_number:
-                        logger.info(f"LETZTER CALLSIGN für {last_flight_number} noch nicht bekannt")
 
                 last_calendar_update = datetime.now()
 
@@ -824,7 +824,7 @@ def main():
                 if not last_flight_time:
                     opensky_tracked_icao = None
 
-                elif not flight_landed and LAST_CALLSIGN and last_flight_time:
+                elif LAST_CALLSIGN and last_flight_time:
 
                     now_dt = datetime.now(TZ)
 
@@ -1027,7 +1027,6 @@ def main():
                                         threading.Thread(target=lamp_eurowings).start()
 
                                         # RESET
-                                        flight_landed = True
                                         opensky_tracked_icao = None
                                         LAST_CALLSIGN = None
                                         MY_CALLSIGNS = []
@@ -1076,7 +1075,6 @@ def main():
                                                 threading.Thread(target=lamp_eurowings).start()
 
                                                 # RESET
-                                                flight_landed = True
                                                 opensky_tracked_icao = None
                                                 LAST_CALLSIGN = None
                                                 MY_CALLSIGNS = []

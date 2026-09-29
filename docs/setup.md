@@ -1,255 +1,124 @@
-<!-- refresh -->
+# Eurowings Flight Tracker
 
-# Raspberry Pi Eurowings Flug-Checker – Handbuch
+Raspberry-Pi flight tracker for Eurowings flights with local ADS-B reception, event e-mails, Sonos announcements and HomePilot light control.
 
-Dieses Dokument beschreibt den kompletten Aufbau und Betrieb des Eurowings-Flug-Checkers.  
-Es dient als Backup-Dokumentation, falls der Raspberry Pi neu installiert werden muss.  
-Das System kombiniert Kalenderdaten, OpenSky API (früher AirLabs), ADS-B Rohdaten (dump1090), Sonos Audio und eine HomePilot Lampe.
+The repository contains **two versions**:
 
----
+## 1. Current version - Home Assistant / FlightRadar24
 
-## Hardware
+`flug_checker.py`
 
-- Raspberry Pi (z.B. Raspberry Pi 3)
-- RTL-SDR USB Stick mit 1090 MHz Antenne
-- Sonos Lautsprecher im Netzwerk
-- Rademacher / HomePilot Lampe
+This is the current production version. The Eurowings calendar provides the day's `EWxxxx` flight numbers and routes. A configured FlightRadar24 integration in Home Assistant resolves the flight number to the operational `EWG...` callsign. The local dump1090 receiver then detects relevant aircraft around the home location.
 
----
+The last flight of the day is determined by the calendar. In the current Phase 1 implementation, its landing is still tracked with OpenSky. OpenSky resolves the ICAO24 from the `EWG...` callsign itself.
 
-## Wichtige Dateien
+Flow:
 
-```bash
-/home/pi/flug_checker.py          (Hauptscript)
-/home/pi/overflight_alert.mp3     (Überflug Alarm)
-/home/pi/landing_day.mp3          (Letzte Landung Alarm - Tag)
-/home/pi/landing_night.mp3        (Letzte Landung Alarm - Nacht)
-/home/pi/flug_checker.log         (Logdatei)
-/home/pi/.flugchecker_config      (Passwörter)
+```text
+Eurowings ICS calendar
+        |
+        v
+Home Assistant + FlightRadar24
+EWxxxx -> EWG callsign
+        |
+        +----> callsigns.json (cache)
+        |
+        v
+local dump1090 / ADS-B
+        |
+        +----> overflight event -> e-mail + Sonos + HomePilot
+        |
+        v
+last calendar flight -> OpenSky -> landing event -> e-mail + Sonos + HomePilot
 ```
 
----
+### Requirements
 
-## ADS-B Radar Installation
+- Raspberry Pi with Python 3
+- dump1090-mutability and an RTL-SDR receiver
+- Home Assistant with the FlightRadar24 integration configured
+- Home Assistant Long-Lived Access Token
+- OpenSky account for the current landing tracker
+- optional: Sonos and Rademacher/HomePilot
+- an ICS calendar containing Eurowings flight entries such as `EW754: CGN-VIE`
 
-```bash
-sudo apt update
-sudo apt install dump1090-mutability
-```
-
-ADS-B Daten liegen danach in:
-
-```bash
-/run/dump1090-mutability/aircraft.json
-```
-
----
-
-## Python Umgebung
+Python packages:
 
 ```bash
-cd /home/pi
-python3 -m venv flug_env
-source flug_env/bin/activate
-pip install requests pytz ics soco
-```
-
----
-
-## PDF2Image
-
-```bash
-sudo apt update
-sudo apt install tesseract-ocr -y
-sudo apt install poppler-utils -y
+python3 -m venv /home/pi/flug_env
 source /home/pi/flug_env/bin/activate
-pip install pdf2image pytesseract pillow
+pip install -r requirements.txt
 ```
 
-Test:
+### Configuration
 
-```bash
-/home/pi/flug_env/bin/python -c "import pdf2image, pytesseract"
-```
-
----
-
-## Passwortdatei erstellen
-
-```bash
-nano /home/pi/.flugchecker_config
-```
-
-Inhalt:
-
-```ini
-# === API / Accounts ===
-ICS_URL=dein_kalender_link
-MAIL_USER=deine_mail
-MAIL_PASSWORD=dein_mail_passwort
-OPENSKY_USER=
-OPENSKY_PASS=dein_passwort
-AIRLABS_KEY=dein_api_key
-
-# === Netzwerk ===
-SONOS_IP=
-PI_IP=
-HOMEPILOT_URL=DEINE_HOMEPILOT_IP/devices/DEIN_DEVICE
-HTTP_PORT=8000
-
-# === Standort ===
-HOME_LAT=
-HOME_LON=
-RADIUS_KM=25
-INFO_RADIUS_KM=50
-
-# === Mail ===
-MY_MAIL=
-WIFE_MAIL=
-```
-
-Dann:
+Create `/home/pi/.flugchecker_config` from `.flugchecker_config.example` and protect it:
 
 ```bash
 chmod 600 /home/pi/.flugchecker_config
 ```
 
----
+Never commit the real config or Home Assistant token.
 
-## Flugchecker Service
-
-```bash
-sudo nano /etc/systemd/system/flugchecker.service
-```
-
-Service aktivieren:
+### Run
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable flugchecker
-sudo systemctl start flugchecker
+/home/pi/flug_env/bin/python /home/pi/flug_checker.py
 ```
 
----
-
-## HTTP Server für Sonos
+Test mode:
 
 ```bash
-sudo nano /etc/systemd/system/flug-http.service
+/home/pi/flug_env/bin/python /home/pi/flug_checker.py --test
 ```
 
-HTTP Service aktivieren:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable flug-http
-sudo systemctl start flug-http
-```
+For permanent operation use the systemd units in `systemd/`.
 
 ---
 
-## Wichtige Terminal Befehle
+## 2. Legacy version - Daily e-mail / PDF / OCR
 
-Script bearbeiten:
+`legacy/flug_checker_daily_pdf.py`
 
-```bash
-nano /home/pi/flug_checker.py
-```
+This version does **not require Home Assistant**. It obtains the `EWG...` callsigns from the Daily roster e-mail and its PDF attachment. PDF text extraction/OCR is therefore required.
 
-Service neu starten:
+Additional packages/tools for the legacy version:
 
 ```bash
-sudo systemctl restart flugchecker
+sudo apt install tesseract-ocr poppler-utils
+source /home/pi/flug_env/bin/activate
+pip install pdf2image pytesseract pillow
 ```
 
-Service Status:
+The legacy version is kept as a standalone fallback and for users who do not run Home Assistant.
 
-```bash
-sudo systemctl status flugchecker
-```
+---
 
-Live Log anzeigen:
+## Important files
+
+| File | Purpose |
+|---|---|
+| `flug_checker.py` | Current HA/FlightRadar24 version |
+| `legacy/flug_checker_daily_pdf.py` | Classic Daily/PDF/OCR version |
+| `.flugchecker_config.example` | Configuration template without secrets |
+| `requirements.txt` | Python dependencies for current version |
+| `systemd/flugchecker.service` | Main service |
+| `systemd/flug-http.service` | Static HTTP server for Sonos MP3 files |
+| `docs/Flug-Checker-Handbuch.pdf` | Setup and recovery documentation |
+
+## Logs
 
 ```bash
 tail -f /home/pi/flug_checker.log
+journalctl -u flugchecker.service -f
 ```
 
-Letzte Logs anzeigen:
+## Status
 
-```bash
-tail -n 50 /home/pi/flug_checker.log
-```
+Current architecture: **ICS + Home Assistant/FlightRadar24 for callsign resolution; local ADS-B for overflight detection; OpenSky for the last landing.**
 
-Nach Änderung einer Service Datei:
+Planned Phase 2: replace the OpenSky landing tracker with FlightRadar24 data after the current HA/FR24 version has proven stable in production.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart flugchecker
-```
+## Security
 
----
-
-## Testmodus
-
-Virtuelle Umgebung aktivieren:
-
-```bash
-source /home/pi/flug_env/bin/activate
-```
-
-Dann Testmodus starten:
-
-```bash
-python3 /home/pi/flug_checker.py --test
-```
-
----
-
-## Nützliche grep Befehle
-
-```bash
-grep EW /home/pi/flug_checker.log
-grep LANDUNG /home/pi/flug_checker.log
-grep ÜBERFLUG /home/pi/flug_checker.log
-cat /run/dump1090-mutability/aircraft.json | grep EWG
-ps aux | grep flugchecker
-journalctl -u flugchecker
-```
-
----
-
-## MP3 Lautstärke anpassen
-
-```bash
-ffmpeg -i /home/pi/xxx.mp3 -filter:a "volume=3" /home/pi/xxx_loud.mp3
-mv /home/pi/xxx_loud.mp3 /home/pi/xxx.mp3
-```
-
----
-
-## Callsing.json
-
-Schnell erstellen:
-
-```bash
-echo '["EWG7H","EWG72E"]' > /home/pi/callsigns.json
-```
-
-Löschen:
-
-```bash
-rm -f /home/pi/callsigns.json
-```
-
----
-
-## Systemdiagramm
-
-- Kalender → letzter Flug (Zeit, Routing)
-- Mail → Betreff: Daily, mit Document.pdf für Callsigns
-- Callsigns kommen aus Daily Mail (OCR)
-- dump1090 → Flugzeugposition
-- OpenSky → Tracking + Landung
-- Flugchecker → Logik & Distanzberechnung
-- Sonos → Audio Alarm
-- HomePilot → Magenta Lampe
+Do not publish `.flugchecker_config`, Home Assistant tokens, mail passwords or other credentials.

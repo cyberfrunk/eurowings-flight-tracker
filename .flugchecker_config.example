@@ -1,20 +1,31 @@
+# Copy to /home/pi/.flugchecker_config and fill in your own values.
+# NEVER commit the real file.
+
+# Calendar
 ICS_URL=
 
-MAIL_USER=
-MAIL_PASSWORD=
+# Home Assistant / FlightRadar24 (current version)
+HA_URL=http://HOME_ASSISTANT_IP:8123
+HA_TOKEN=
 
+# OpenSky - current Phase 1 landing tracker
 OPENSKY_USER=
 OPENSKY_PASS=
 
-SONOS_IP=
-PI_IP=
-HOMEPILOT_URL=
-HTTP_PORT=8000
+# Mail account used for outgoing event e-mails
+MAIL_USER=
+MAIL_PASSWORD=
+MY_MAIL=
+WIFE_MAIL=
 
+# Location
 HOME_LAT=
 HOME_LON=
 RADIUS_KM=25
 INFO_RADIUS_KM=50
 
-MY_MAIL=
-WIFE_MAIL=
+# Network / devices
+SONOS_IP=
+PI_IP=
+HTTP_PORT=8000
+HOMEPILOT_URL=http://HOMEPILOT_IP/devices/DEVICE_ID

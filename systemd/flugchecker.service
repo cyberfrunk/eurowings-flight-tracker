@@ -4,11 +4,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=simple
 User=pi
 WorkingDirectory=/home/pi
 ExecStart=/home/pi/flug_env/bin/python /home/pi/flug_checker.py
-Restart=always
-RestartSec=10
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
