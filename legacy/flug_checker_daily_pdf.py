@@ -613,6 +613,12 @@ def main():
 
     min_distances = {}
 
+    # Dasselbe ATC-Callsign kann am selben Tag spaeter erneut verwendet werden
+    # (z.B. Hin- und Rueckflug). Nach 30 Minuten lokaler Abwesenheit wird der
+    # Ueberflug-Zustand fuer dieses Callsign neu freigegeben.
+    callsign_last_seen = {}
+    CALLSIGN_REARM_SECONDS = 1800
+
     last_altitude = None
 
     # 🔥 Logging Steuerung
@@ -736,6 +742,32 @@ def main():
 
                 if flight not in MY_CALLSIGNS:
                     continue
+
+                # Ein Callsign kann spaeter am Tag zu einem neuen Flug gehoeren.
+                # War es mindestens 30 Minuten nicht lokal sichtbar, darf es
+                # wieder einen eigenen Closest Approach ausloesen.
+                now_seen = time.time()
+                previous_seen = callsign_last_seen.get(flight)
+
+                if (
+                    previous_seen is not None
+                    and now_seen - previous_seen >= CALLSIGN_REARM_SECONDS
+                ):
+                    if (
+                        flight in overflight_triggered
+                        or flight in min_distances
+                        or flight in last_alert
+                    ):
+                        logger.info(
+                            f"CALLSIGN RE-ARM: {flight} nach "
+                            f"{(now_seen - previous_seen) / 60:.0f} Min Abwesenheit"
+                        )
+
+                    overflight_triggered.discard(flight)
+                    min_distances.pop(flight, None)
+                    last_alert.pop(flight, None)
+
+                callsign_last_seen[flight] = now_seen
 
                 dist = distance_km(HOME_LAT, HOME_LON, lat, lon)
 

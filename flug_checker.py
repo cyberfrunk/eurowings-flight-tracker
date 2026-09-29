@@ -563,6 +563,13 @@ def main():
     flight_landed = False
 
     min_distances = {}
+
+    # Dasselbe ATC-Callsign kann am selben Tag spaeter erneut verwendet werden
+    # (z.B. Hin- und Rueckflug). Nach 30 Minuten lokaler Abwesenheit wird der
+    # Ueberflug-Zustand fuer dieses Callsign neu freigegeben.
+    callsign_last_seen = {}
+    CALLSIGN_REARM_SECONDS = 1800
+
     last_altitude = None
 
     # Logging Steuerung
@@ -581,7 +588,7 @@ def main():
     # OpenSky Tracking-Zustand
     last_seen_timestamp = None
     was_airborne = False
-    was_below_fl100 = False
+    was_below_1000m = False
     prev_groundspeed = None
 
     # Callsign-Cache ist nur Fallback für Überflüge.
@@ -668,7 +675,7 @@ def main():
                     last_tracking_api_call = 0
                     last_seen_timestamp = None
                     was_airborne = False
-                    was_below_fl100 = False
+                    was_below_1000m = False
                     prev_groundspeed = None
                     last_altitude = None
                     flight_landed = False
@@ -705,7 +712,7 @@ def main():
                         last_tracking_api_call = 0
                         last_seen_timestamp = None
                         was_airborne = False
-                        was_below_fl100 = False
+                        was_below_1000m = False
                         prev_groundspeed = None
                         last_altitude = None
 
@@ -736,6 +743,32 @@ def main():
 
                 if flight not in MY_CALLSIGNS:
                     continue
+
+                # Ein Callsign kann spaeter am Tag zu einem neuen Kalenderflug
+                # gehoeren. War es mindestens 30 Minuten nicht lokal sichtbar,
+                # darf es wieder einen eigenen Closest Approach ausloesen.
+                now_seen = time.time()
+                previous_seen = callsign_last_seen.get(flight)
+
+                if (
+                    previous_seen is not None
+                    and now_seen - previous_seen >= CALLSIGN_REARM_SECONDS
+                ):
+                    if (
+                        flight in overflight_triggered
+                        or flight in min_distances
+                        or flight in last_alert
+                    ):
+                        logger.info(
+                            f"CALLSIGN RE-ARM: {flight} nach "
+                            f"{(now_seen - previous_seen) / 60:.0f} Min Abwesenheit"
+                        )
+
+                    overflight_triggered.discard(flight)
+                    min_distances.pop(flight, None)
+                    last_alert.pop(flight, None)
+
+                callsign_last_seen[flight] = now_seen
 
                 dist = distance_km(HOME_LAT, HOME_LON, lat, lon)
 
@@ -921,7 +954,7 @@ def main():
                                     tracked_callsign = LAST_CALLSIGN
 
                                     was_airborne = False
-                                    was_below_fl100 = False
+                                    was_below_1000m = False
                                     prev_groundspeed = None
                                     last_altitude = None
 
@@ -996,9 +1029,9 @@ def main():
                                     if altitude > 1000:
                                         was_airborne = True
 
-                                    # 🔻 unter FL100 (ca. 10.000 ft = 3048 m)
+                                    # 🔻 unter 1000 m (ca. 3280 ft)
                                     if altitude < 1000:
-                                        was_below_fl100 = True
+                                        was_below_1000m = True
 
                                     # 🛬 PRIMARY: Landing via Groundspeed
                                     if (
@@ -1032,7 +1065,7 @@ def main():
                                         LAST_CALLSIGN = None
                                         MY_CALLSIGNS = []
                                         was_airborne = False
-                                        was_below_fl100 = False
+                                        was_below_1000m = False
                                         prev_groundspeed = None
                                         last_seen_timestamp = None
 
@@ -1045,7 +1078,7 @@ def main():
                                     prev_groundspeed = groundspeed
 
                                 else:
-                                    if was_airborne and was_below_fl100:
+                                    if was_airborne and was_below_1000m:
  
                                         logger.info("NICHT IM STATE GEFUNDEN")
 
@@ -1081,7 +1114,7 @@ def main():
                                                 LAST_CALLSIGN = None
                                                 MY_CALLSIGNS = []
                                                 was_airborne = False
-                                                was_below_fl100 = False
+                                                was_below_1000m = False
                                                 prev_groundspeed = None
                                                 last_seen_timestamp = None
 
