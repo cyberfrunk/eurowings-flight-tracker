@@ -662,6 +662,36 @@ def main():
                     last_arr = None
                     last_flight_number = None
 
+                    # Keine EW-Flüge mehr im Kalender:
+                    # altes Tracking und Callsign-Cache vollständig verwerfen.
+                    if MY_CALLSIGNS or LAST_CALLSIGN or opensky_tracked_icao:
+                        logger.info("KEINE KALENDERFLUEGE -> altes Tracking wird beendet")
+
+                    MY_CALLSIGNS = []
+                    LAST_CALLSIGN = None
+                    flight_callsigns = {}
+
+                    opensky_tracked_icao = None
+                    tracked_icao = None
+                    tracked_callsign = None
+
+                    last_callsign_search = 0
+                    last_tracking_api_call = 0
+                    last_seen_timestamp = None
+                    was_airborne = False
+                    was_below_1000m = False
+                    prev_groundspeed = None
+                    last_altitude = None
+                    flight_landed = False
+
+                    try:
+                        os.remove("/home/pi/callsigns.json")
+                        logger.info("CALLSIGNS CACHE geloescht - keine Kalenderfluege")
+                    except FileNotFoundError:
+                        pass
+                    except Exception as e:
+                        logger.warning(f"CALLSIGN CACHE konnte nicht geloescht werden: {e}")
+
                 # Wenn der Kalender einen anderen letzten Flug nennt, darf ein
                 # alter OpenSky-Tracker nicht auf dem vorherigen Flug weiterlaufen.
                 if previous_last_flight_number != last_flight_number:
