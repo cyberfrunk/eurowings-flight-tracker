@@ -359,6 +359,25 @@ def todays_flights():
 
     return flights
 
+# ================= BATMAN / HOME ASSISTANT =================
+
+BATMAN_WEBHOOK = (
+    "http://192.168.3.30:8123/api/webhook/"
+    "batman_flugchecker_2026_f7b4d92e8a31c650"
+)
+
+def batman_notify(event):
+    try:
+        response = requests.post(
+            BATMAN_WEBHOOK,
+            json={"event": event},
+            timeout=5
+        )
+        response.raise_for_status()
+        logger.info(f"BATMAN EVENT GESENDET: {event}")
+    except Exception as e:
+        logger.warning(f"BATMAN WEBHOOK FEHLER: {e}")
+
 # ================= HOME ASSISTANT / FLIGHTRADAR24 =================
 
 def ha_headers():
@@ -871,6 +890,11 @@ def main():
 
                             threading.Thread(target=sonos_play, args=(MP3_OVERFLIGHT,)).start()
                             threading.Thread(target=lamp_eurowings).start()
+                            threading.Thread(
+                                target=batman_notify,
+                                args=("overflight",),
+                                daemon=True
+                            ).start()
 
                             if icao24:
                                 tracked_icao = icao24
@@ -1089,6 +1113,12 @@ def main():
 
                                         threading.Thread(target=lamp_eurowings).start()
 
+                                        threading.Thread(
+                                            target=batman_notify,
+                                            args=("landing",),
+                                            daemon=True
+                                        ).start()
+
                                         # RESET
                                         flight_landed = True
                                         opensky_tracked_icao = None
@@ -1137,6 +1167,12 @@ def main():
                                                     threading.Thread(target=sonos_play, args=(MP3_LANDING_NIGHT,)).start()
 
                                                 threading.Thread(target=lamp_eurowings).start()
+
+                                                threading.Thread(
+                                                    target=batman_notify,
+                                                    args=("landing",),
+                                                    daemon=True
+                                                ).start()
 
                                                 # RESET
                                                 flight_landed = True
